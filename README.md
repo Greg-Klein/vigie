@@ -9,74 +9,76 @@
           |___/
 ```
 
-`vigie` surveille GitLab et écrit dans un fichier les tickets qui te sont assignés avec des labels et un statut donnés. Elle n'appelle aucun modèle et n'écrit rien sur GitLab : elle ne fait que lire, à travers `glab`.
+`vigie` watches GitLab and writes to a file the tickets assigned to you that carry given labels and a given status. It calls no model and writes nothing to GitLab: it only reads, through `glab`.
 
-Le fichier est fait pour être relu par un autre outil : un script, un tableau de bord, un agent qui prend les tickets à faire.
+The file is meant to be read by another tool: a script, a dashboard, an agent that picks up the tickets to do.
 
-## Prérequis
+The command-line messages are in French.
 
-- [`glab`](https://gitlab.com/gitlab-org/cli), connecté au compte qui voit les projets (`glab auth login`).
-- Le champ statut des tickets, disponible sur les offres payantes de GitLab.
-- Rust, pour compiler.
+## Requirements
 
-## Installation
+- [`glab`](https://gitlab.com/gitlab-org/cli), logged in to an account that can see the projects (`glab auth login`).
+- The ticket status field, available on the paid GitLab tiers.
+- Rust, to build it.
+
+## Install
 
 ```bash
 cargo install --path .
 ```
 
-## Utilisation
+## Usage
 
 ```bash
-vigie setup                          # configuration pas à pas
-vigie add <groupe>/<projet>          # surveiller un projet
-vigie add <groupe> --group           # ou tous les projets d'un groupe
-vigie set label "equipe-a, frontend" # labels exigés
-vigie set status "To do"             # statut exigé
-vigie set interval 60                # fréquence d'interrogation, en secondes
-vigie set output ~/tickets.json      # fichier à écrire
-vigie check --print                  # un passage, sans rien écrire
-vigie start                          # surveillance en arrière-plan
+vigie setup                          # step-by-step configuration
+vigie add <group>/<project>          # watch a project
+vigie add <group> --group            # or every project of a group
+vigie set label "team-a, frontend"   # required labels
+vigie set status "To do"             # required status
+vigie set interval 60                # how often GitLab is asked, in seconds
+vigie set output ~/tickets.json      # file to write
+vigie check --print                  # one pass, writing nothing
+vigie start                          # watch in the background
 vigie status
 vigie stop
 ```
 
-`--label`, `--status` et `--assignee` sur `vigie add` remplacent le filtre commun pour ce projet.
+`--label`, `--status` and `--assignee` on `vigie add` replace the common filter for that project.
 
-## Le filtre
+## The filter
 
-Un ticket est retenu quand il est ouvert, assigné à toi (ou au compte donné par `assignee`), qu'il porte **tous** les labels demandés et qu'il est dans le statut demandé.
+A ticket is kept when it is open, assigned to you (or to the account given as `assignee`), carries **every** required label and is in the required status.
 
-- La casse ne compte ni pour les labels ni pour le statut : `equipe-a` trouve « Equipe-A ».
-- Le statut doit correspondre en entier : « To do » ne prend pas « To do - QA ».
-- Plusieurs labels s'écrivent séparés par des virgules, ou en répétant `--label`.
+- Case is ignored for labels and for the status: `team-a` finds "Team-A".
+- The status has to match on its whole name: "To do" does not take "To do - QA".
+- Several labels are written separated by commas, or by repeating `--label`.
 
-## Le fichier écrit
+## The file
 
-Un instantané de tout ce qui correspond au filtre à l'instant du passage, réécrit en entier puis renommé, pour qu'un lecteur ne voie jamais un fichier à moitié écrit.
+A snapshot of everything that matches the filter at the time of the pass, written whole and then renamed into place, so a reader never sees a half-written file.
 
 ```json
 {
   "version": 1,
   "generatedAt": "2026-01-15T09:30:00.000Z",
   "tickets": [
-    { "url": "https://gitlab.com/acme/shop/-/work_items/101", "title": "Corriger le total du panier", "source": "acme/shop" }
+    { "url": "https://gitlab.com/acme/shop/-/work_items/101", "title": "Fix the cart total", "source": "acme/shop" }
   ]
 }
 ```
 
-Un ticket qui ne correspond plus au filtre sort du fichier au passage suivant. Un projet qui ne répond pas garde ses tickets du fichier précédent.
+A ticket that no longer matches leaves the file at the next pass. A project that cannot be asked keeps the tickets it had in the previous file.
 
-Le fichier contient des titres de tickets : garde-le hors de tout dépôt.
+The file holds ticket titles: keep it out of any repository.
 
-## Fonctionnement
+## How it runs
 
-Sur macOS, `vigie start` installe une tâche `launchd` qui lance un passage par intervalle : rien ne reste en mémoire entre deux passages. `vigie stop` la retire. Ailleurs, ou avec `vigie start --resident`, un processus reste ouvert et dort entre deux passages (moins de 2 Mo).
+On macOS, `vigie start` installs a `launchd` job that runs one pass per interval: nothing stays in memory between two passes. `vigie stop` removes it. Elsewhere, or with `vigie start --resident`, a process stays open and sleeps between passes (under 2 MB).
 
-Le journal est ramené à sa dernière moitié au-delà de 256 Ko.
+The log is cut back to its last half past 256 KB.
 
-La configuration, le journal et le pid sont dans `~/.config/vigie/` (`VIGIE_HOME` pour un autre dossier). Sans réglage `output`, le fichier est écrit dans ce dossier.
+The configuration, the log and the pid live in `~/.config/vigie/` (`VIGIE_HOME` for another directory). With no `output` setting, the file is written in that directory.
 
-## Licence
+## License
 
 MIT
