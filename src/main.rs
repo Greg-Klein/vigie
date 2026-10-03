@@ -56,7 +56,7 @@ fn banner() {
     for line in BANNER {
         println!("{}", blue(line));
     }
-    println!("  {}\n", dim("surveille GitLab, liste les tickets qui t'attendent"));
+    println!("  {}\n", dim("watches GitLab, lists the tickets waiting for you"));
 }
 
 fn ok(text: &str) { println!("  {} {text}", green("✔")); }
@@ -114,17 +114,17 @@ fn parse_iso(text: &str) -> Option<u64> {
 
 fn ago(seconds: u64) -> String {
     match seconds {
-        0..=89 => format!("il y a {seconds} s"),
-        90..=5399 => format!("il y a {} min", seconds / 60),
-        5400..=172_799 => format!("il y a {} h", seconds / 3600),
-        _ => format!("il y a {} j", seconds / 86_400),
+        0..=89 => format!("{seconds} s ago"),
+        90..=5399 => format!("{} min ago", seconds / 60),
+        5400..=172_799 => format!("{} h ago", seconds / 3600),
+        _ => format!("{} d ago", seconds / 86_400),
     }
 }
 
 // ---------------------------------------------------------------- files
 
 fn home() -> PathBuf {
-    PathBuf::from(env::var_os("HOME").unwrap_or_else(|| fail("HOME n'est pas défini.")))
+    PathBuf::from(env::var_os("HOME").unwrap_or_else(|| fail("HOME is not set.")))
 }
 
 /// Where the configuration, the log and the pid live. `VIGIE_HOME` moves them, for a second setup or a test.
@@ -151,7 +151,7 @@ fn write_whole(file: &Path, content: &str) {
         fs::rename(&temporary, file)
     };
     if let Err(error) = write() {
-        fail(&format!("Impossible d'écrire {} : {error}", file.display()));
+        fail(&format!("Cannot write {}: {error}", file.display()));
     }
 }
 
@@ -262,11 +262,11 @@ impl Config {
         let file = config_file();
         let Ok(text) = fs::read_to_string(&file) else {
             if required {
-                fail(&format!("Aucune configuration. Lance {} pour commencer.", bold("vigie setup")));
+                fail(&format!("No configuration. Run {} to get started.", bold("vigie setup")));
             }
             return Config::default();
         };
-        serde_json::from_str(&text).unwrap_or_else(|error| fail(&format!("{} est illisible : {error}", file.display())))
+        serde_json::from_str(&text).unwrap_or_else(|error| fail(&format!("{} is unreadable: {error}", file.display())))
     }
 
     fn save(&self) {
@@ -286,15 +286,15 @@ impl Config {
     fn describe(&self, source: &Source) -> String {
         let filter = self.filter(source);
         let label = match filter.labels.len() {
-            0 => "tous labels".to_string(),
-            count => format!("label{} {}", if count > 1 { "s" } else { "" }, filter.labels.iter().map(|label| format!("« {label} »")).collect::<Vec<_>>().join(" + ")),
+            0 => "any label".to_string(),
+            count => format!("label{} {}", if count > 1 { "s" } else { "" }, filter.labels.iter().map(|label| format!("\"{label}\"")).collect::<Vec<_>>().join(" + ")),
         };
-        let assignee = if filter.assignee.is_empty() { "moi" } else { filter.assignee.as_str() };
+        let assignee = if filter.assignee.is_empty() { "me" } else { filter.assignee.as_str() };
         format!(
             "{}{}  {}",
             bold(&source.path),
-            if source.group { dim(" (groupe)") } else { String::new() },
-            dim(&format!("{label} · statut « {} » · assigné {assignee}", filter.status))
+            if source.group { dim(" (group)") } else { String::new() },
+            dim(&format!("{label} · status \"{}\" · assigned to {assignee}", filter.status))
         )
     }
 
@@ -304,7 +304,7 @@ impl Config {
 
     fn require_sources(&self) {
         if self.sources.is_empty() {
-            fail(&format!("Aucun projet à surveiller. Ajoute-en un avec {}.", bold("vigie add <groupe>/<projet>")));
+            fail(&format!("No project to watch. Add one with {}.", bold("vigie add <group>/<project>")));
         }
     }
 }
@@ -312,26 +312,26 @@ impl Config {
 // ---------------------------------------------------------------- gitlab
 
 fn glab(args: &[&str]) -> Result<String, String> {
-    let output = Command::new("glab").args(args).stdin(Stdio::null()).output().map_err(|error| format!("glab introuvable ou inutilisable : {error}"))?;
+    let output = Command::new("glab").args(args).stdin(Stdio::null()).output().map_err(|error| format!("glab not found or unusable: {error}"))?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
-    Err(stderr.lines().filter(|line| !line.trim().is_empty()).last().unwrap_or("glab a échoué").trim().to_string())
+    Err(stderr.lines().filter(|line| !line.trim().is_empty()).last().unwrap_or("glab failed").trim().to_string())
 }
 
 fn graphql(query: &str) -> Result<Value, String> {
-    let answer: Value = serde_json::from_str(&glab(&["api", "graphql", "-f", &format!("query={query}")])?).map_err(|error| format!("réponse illisible : {error}"))?;
+    let answer: Value = serde_json::from_str(&glab(&["api", "graphql", "-f", &format!("query={query}")])?).map_err(|error| format!("unreadable answer: {error}"))?;
     // GraphQL answers HTTP 200 with a populated `errors` array on failure.
     if let Some(errors) = answer["errors"].as_array().filter(|errors| !errors.is_empty()) {
-        return Err(errors.iter().filter_map(|error| error["message"].as_str()).collect::<Vec<_>>().join(" ; "));
+        return Err(errors.iter().filter_map(|error| error["message"].as_str()).collect::<Vec<_>>().join("; "));
     }
     Ok(answer["data"].clone())
 }
 
 fn current_username() -> Result<String, String> {
-    let user: Value = serde_json::from_str(&glab(&["api", "user"])?).map_err(|error| format!("réponse illisible : {error}"))?;
-    user["username"].as_str().map(str::to_string).ok_or_else(|| "compte glab introuvable".to_string())
+    let user: Value = serde_json::from_str(&glab(&["api", "user"])?).map_err(|error| format!("unreadable answer: {error}"))?;
+    user["username"].as_str().map(str::to_string).ok_or_else(|| "glab account not found".to_string())
 }
 
 fn quoted(text: &str) -> String {
@@ -368,7 +368,7 @@ fn fetch_source(filter: &Filter, me: &mut Option<String>) -> Result<(usize, Vec<
     loop {
         let data = graphql(&query(filter, &assignee, cursor.as_deref()))?;
         if data[root].is_null() {
-            return Err(format!("{} introuvable ou invisible pour ce compte", if filter.group { "groupe" } else { "projet" }));
+            return Err(format!("{} not found or not visible to this account", if filter.group { "group" } else { "project" }));
         }
         let page = &data[root]["workItems"];
         nodes.extend(page["nodes"].as_array().cloned().unwrap_or_default());
@@ -388,7 +388,7 @@ fn fetch_source(filter: &Filter, me: &mut Option<String>) -> Result<(usize, Vec<
         Some(widget["status"]["name"].as_str().map(str::to_string))
     };
     if !nodes.is_empty() && nodes.iter().all(|node| status_of(node).is_none()) {
-        return Err("ces tickets n'ont pas de champ statut (il dépend de l'offre GitLab)".to_string());
+        return Err("these tickets have no status field (it depends on the GitLab plan)".to_string());
     }
     let labels_of = |node: &Value| -> Vec<String> {
         let widgets = node["widgets"].as_array().cloned().unwrap_or_default();
@@ -427,7 +427,7 @@ fn check(config: &Config, print: bool) -> (usize, usize) {
         let filter = config.filter(source);
         match fetch_source(&filter, &mut me) {
             Ok((assigned, found)) => {
-                ok(&format!("{}  {} {} {}", bold(&source.path), dim(&format!("{} à moi, dont", plural(assigned, "ticket"))), found.len(), dim(&format!("en « {} »", filter.status))));
+                ok(&format!("{}  {} {} {}", bold(&source.path), dim(&format!("{} assigned to me,", plural(assigned, "ticket"))), found.len(), dim(&format!("in \"{}\"", filter.status))));
                 for ticket in &found {
                     info(&format!("{}  {}", ticket["title"].as_str().unwrap_or(""), dim(ticket["url"].as_str().unwrap_or(""))));
                 }
@@ -447,7 +447,7 @@ fn check(config: &Config, print: bool) -> (usize, usize) {
         }
     }
     if print {
-        info(&dim("Mode aperçu : rien n'est écrit."));
+        info(&dim("Preview mode: nothing is written."));
     } else {
         let snapshot = json!({ "version": 1, "generatedAt": iso(now()), "tickets": unique });
         write_whole(Path::new(&config.output), &format!("{}\n", serde_json::to_string_pretty(&snapshot).unwrap_or_default()));
@@ -470,11 +470,11 @@ fn trim_log() {
 /// One pass as the scheduler or the resident loop runs it: stamped, and never fatal.
 fn scheduled_pass() {
     trim_log();
-    println!("{}  vérification", iso(now()));
+    println!("{}  checking", iso(now()));
     // Read again at every pass: a project added while the watch runs is watched at the next one.
     let config = Config::load(true);
     let (count, _) = check(&config, false);
-    println!("{}  {} dans {}", iso(now()), plural(count, "ticket"), config.output);
+    println!("{}  {} in {}", iso(now()), plural(count, "ticket"), config.output);
 }
 
 // ---------------------------------------------------------------- watch
@@ -503,7 +503,7 @@ fn resident_pid() -> Option<u32> {
 }
 
 fn executable() -> PathBuf {
-    env::current_exe().unwrap_or_else(|error| fail(&format!("Chemin du binaire introuvable : {error}")))
+    env::current_exe().unwrap_or_else(|error| fail(&format!("Binary path not found: {error}")))
 }
 
 /// A launchd job that runs one pass per interval. Nothing stays in memory between two passes.
@@ -541,7 +541,7 @@ fn install_job(config: &Config) {
     let status = Command::new("launchctl").args(["bootstrap", &format!("gui/{}", uid()), &file.to_string_lossy()]).status();
     if !status.map(|status| status.success()).unwrap_or(false) {
         let _ = fs::remove_file(&file);
-        fail("launchd a refusé la tâche. Essaie vigie start --resident.");
+        fail("launchd refused the job. Try vigie start --resident.");
     }
 }
 
@@ -552,24 +552,24 @@ fn remove_job() {
 
 fn start(resident: bool) {
     if job_loaded() || resident_pid().is_some() {
-        fail("La surveillance tourne déjà.");
+        fail("The watch is already running.");
     }
     let config = Config::load(true);
     config.require_sources();
     banner();
     if cfg!(target_os = "macos") && !resident {
         install_job(&config);
-        ok(&format!("Surveillance lancée, un passage toutes les {} s {}", config.interval(), dim("(launchd, rien en mémoire entre deux passages)")));
+        ok(&format!("Watch started, one pass every {} s {}", config.interval(), dim("(launchd, nothing in memory between two passes)")));
     } else {
         let _ = fs::create_dir_all(state_dir());
-        let log = fs::OpenOptions::new().create(true).append(true).open(log_file()).unwrap_or_else(|error| fail(&format!("Journal inaccessible : {error}")));
-        let errors = log.try_clone().unwrap_or_else(|error| fail(&format!("Journal inaccessible : {error}")));
+        let log = fs::OpenOptions::new().create(true).append(true).open(log_file()).unwrap_or_else(|error| fail(&format!("Cannot open the log: {error}")));
+        let errors = log.try_clone().unwrap_or_else(|error| fail(&format!("Cannot open the log: {error}")));
         // Its own process group: it outlives the terminal that started it.
-        let child = Command::new(executable()).arg("run").stdin(Stdio::null()).stdout(log).stderr(errors).process_group(0).spawn().unwrap_or_else(|error| fail(&format!("Lancement impossible : {error}")));
+        let child = Command::new(executable()).arg("run").stdin(Stdio::null()).stdout(log).stderr(errors).process_group(0).spawn().unwrap_or_else(|error| fail(&format!("Cannot start: {error}")));
         write_whole(&pid_file(), &child.id().to_string());
-        ok(&format!("Surveillance lancée {}, toutes les {} s", dim(&format!("(pid {})", child.id())), config.interval()));
+        ok(&format!("Watch started {}, every {} s", dim(&format!("(pid {})", child.id())), config.interval()));
     }
-    info(&format!("{} · journal : {}", plural(config.sources.len(), "projet"), bold("vigie logs")));
+    info(&format!("{} · log: {}", plural(config.sources.len(), "project"), bold("vigie logs")));
 }
 
 fn stop(quiet: bool) -> bool {
@@ -584,7 +584,7 @@ fn stop(quiet: bool) -> bool {
     }
     let stopped = job || pid.is_some();
     if !quiet {
-        if stopped { ok("Surveillance arrêtée") } else { fail("La surveillance n'est pas lancée.") }
+        if stopped { ok("Watch stopped") } else { fail("The watch is not running.") }
     }
     stopped
 }
@@ -622,7 +622,7 @@ fn options(args: &[String]) -> Options {
             "--resident" => found.resident = true,
             "--label" | "--status" | "--assignee" => {
                 index += 1;
-                let value = args.get(index).cloned().unwrap_or_else(|| fail(&format!("{arg} attend une valeur.")));
+                let value = args.get(index).cloned().unwrap_or_else(|| fail(&format!("{arg} expects a value.")));
                 match arg {
                     // Given several times or as one list, the labels add up.
                     "--label" => found.labels.get_or_insert_with(Vec::new).extend(split_labels(&value)),
@@ -630,7 +630,7 @@ fn options(args: &[String]) -> Options {
                     _ => found.assignee = Some(value),
                 }
             }
-            _ if arg.starts_with("--") => fail(&format!("Option inconnue : {arg}")),
+            _ if arg.starts_with("--") => fail(&format!("Unknown option: {arg}")),
             _ => found.positional.push(arg.to_string()),
         }
         index += 1;
@@ -643,7 +643,7 @@ fn reschedule(config: &Config) {
     if job_loaded() {
         remove_job();
         install_job(config);
-        info(&format!("Surveillance relancée, un passage toutes les {} s.", config.interval()));
+        info(&format!("Watch restarted, one pass every {} s.", config.interval()));
     }
 }
 
@@ -652,7 +652,7 @@ fn setup() {
     let mut config = Config::load(false);
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
-    // Entrée keeps the value shown between brackets, a dash empties it.
+    // Enter keeps the value shown between brackets, a dash empties it.
     let mut ask = |question: &str, current: &str| -> String {
         let shown = if current.is_empty() { String::new() } else { dim(&format!(" [{current}]")) };
         print!("  {} {question}{shown} ", blue("?"));
@@ -668,127 +668,127 @@ fn setup() {
         }
     };
 
-    println!("  {} {}", bold("Réglages communs"), dim("(Entrée garde la valeur entre crochets)"));
-    config.defaults.labels = split_labels(&ask("Labels à exiger, séparés par des virgules (- pour aucun) :", &config.defaults.labels.join(", ")));
-    let status = ask("Statut à exiger :", &config.defaults.status);
+    println!("  {} {}", bold("Shared settings"), dim("(Enter keeps the value between brackets)"));
+    config.defaults.labels = split_labels(&ask("Required labels, separated by commas (- for none):", &config.defaults.labels.join(", ")));
+    let status = ask("Required status:", &config.defaults.status);
     if !status.is_empty() {
         config.defaults.status = status;
     }
-    config.defaults.assignee = ask("Assigné (- pour ton compte glab) :", &config.defaults.assignee);
-    if let Ok(seconds) = ask("Fréquence d'interrogation de GitLab, en secondes :", &config.interval_seconds.to_string()).parse::<u64>() {
+    config.defaults.assignee = ask("Assignee (- for your glab account):", &config.defaults.assignee);
+    if let Ok(seconds) = ask("How often to ask GitLab, in seconds:", &config.interval_seconds.to_string()).parse::<u64>() {
         config.interval_seconds = seconds.max(MIN_INTERVAL);
     }
-    let output = ask("Fichier à écrire :", &config.output);
+    let output = ask("File to write:", &config.output);
     if !output.is_empty() {
         config.output = absolute(&output);
     }
 
-    println!("\n  {}", bold("Projets surveillés"));
+    println!("\n  {}", bold("Watched projects"));
     for source in &config.sources {
         info(&config.describe(source));
     }
     loop {
-        let added = ask("Ajouter un projet (groupe/projet), vide pour finir :", "");
+        let added = ask("Add a project (group/project), empty to finish:", "");
         if added.is_empty() {
             break;
         }
-        let group = ask("C'est un groupe entier ? (o/N)", "N").to_lowercase().starts_with('o');
+        let group = ask("Is it a whole group? (y/N)", "N").to_lowercase().starts_with('y');
         config.sources.retain(|source| source.path != added);
         config.sources.push(Source { path: added.clone(), group, labels: None, status: None, assignee: None });
-        ok(&format!("{added} ajouté"));
+        ok(&format!("{added} added"));
     }
     config.save();
     println!();
-    ok(&format!("Configuration écrite dans {}", config_file().display()));
+    ok(&format!("Configuration written to {}", config_file().display()));
     reschedule(&config);
-    info(&format!("Essaie sans rien écrire : {}", bold("vigie check --print")));
-    info(&format!("Puis lance la surveillance : {}", bold("vigie start")));
+    info(&format!("Try it without writing anything: {}", bold("vigie check --print")));
+    info(&format!("Then start the watch: {}", bold("vigie start")));
 }
 
 fn add(args: &[String]) {
     let found = options(args);
     let Some(target) = found.positional.first() else {
-        fail("Usage : vigie add <groupe>/<projet> [--group] [--label <nom>]... [--status <nom>] [--assignee <compte>]");
+        fail("Usage: vigie add <group>/<project> [--group] [--label <name>]... [--status <name>] [--assignee <account>]");
     };
     let mut config = Config::load(false);
     let source = Source { path: target.clone(), group: found.group, labels: found.labels, status: found.status, assignee: found.assignee };
     config.sources.retain(|entry| &entry.path != target);
     config.sources.push(source.clone());
     config.save();
-    ok(&format!("Surveillé : {}", config.describe(&source)));
+    ok(&format!("Watching: {}", config.describe(&source)));
 }
 
 fn remove(args: &[String]) {
     let mut config = Config::load(true);
     let Some(target) = args.first().filter(|target| config.sources.iter().any(|source| &source.path == *target)) else {
-        fail("Ce projet n'est pas surveillé.");
+        fail("This project is not watched.");
     };
     config.sources.retain(|source| &source.path != target);
     config.save();
-    ok(&format!("{target} n'est plus surveillé"));
+    ok(&format!("{target} is no longer watched"));
 }
 
 fn set(args: &[String]) {
-    let usage = "Usage : vigie set <interval|output|label|status|assignee> <valeur>";
+    let usage = "Usage: vigie set <interval|output|label|status|assignee> <value>";
     let key = args.first().map(String::as_str).unwrap_or_else(|| fail(usage));
     let value = args[1..].join(" ");
     let mut config = Config::load(false);
     match key {
         "interval" => {
-            config.interval_seconds = value.parse::<u64>().ok().filter(|seconds| *seconds >= MIN_INTERVAL).unwrap_or_else(|| fail(&format!("La fréquence est un nombre de secondes, {MIN_INTERVAL} au minimum.")));
+            config.interval_seconds = value.parse::<u64>().ok().filter(|seconds| *seconds >= MIN_INTERVAL).unwrap_or_else(|| fail(&format!("The interval is a number of seconds, {MIN_INTERVAL} at least.")));
         }
         "output" if !value.is_empty() => config.output = absolute(&value),
         "label" | "labels" => config.defaults.labels = split_labels(&value),
         "assignee" => config.defaults.assignee = value.clone(),
         "status" if !value.is_empty() => config.defaults.status = value.clone(),
-        "output" | "status" => fail(&format!("{key} ne peut pas être vide.")),
+        "output" | "status" => fail(&format!("{key} cannot be empty.")),
         _ => fail(usage),
     }
     config.save();
-    ok(&format!("{key} = {}", if value.is_empty() { dim("(vide)") } else { value }));
+    ok(&format!("{key} = {}", if value.is_empty() { dim("(empty)") } else { value }));
     if key == "interval" {
         reschedule(&config);
         if resident_pid().is_some() {
-            info("Pris en compte après le passage en cours.");
+            info("Applied after the current pass.");
         }
     }
 }
 
 fn list(config: &Config) {
-    println!("  {}", bold("Projets surveillés"));
+    println!("  {}", bold("Watched projects"));
     if config.sources.is_empty() {
-        info(&dim("aucun"));
+        info(&dim("none"));
     }
     for source in &config.sources {
         info(&config.describe(source));
     }
-    println!("\n  {}", bold("Réglages"));
-    info(&format!("fréquence  {} s", config.interval()));
-    info(&format!("fichier    {}", config.output));
+    println!("\n  {}", bold("Settings"));
+    info(&format!("interval   {} s", config.interval()));
+    info(&format!("file       {}", config.output));
     info(&format!("config     {}", config_file().display()));
 }
 
 fn status() {
     banner();
     if job_loaded() {
-        ok(&format!("Surveillance en cours {}", dim("(launchd, un passage par intervalle)")));
+        ok(&format!("Watch running {}", dim("(launchd, one pass per interval)")));
     } else if let Some(pid) = resident_pid() {
-        ok(&format!("Surveillance en cours {}", dim(&format!("(pid {pid})"))));
+        ok(&format!("Watch running {}", dim(&format!("(pid {pid})"))));
     } else {
-        warn(&format!("Surveillance arrêtée. {}", dim("vigie start pour la lancer")));
+        warn(&format!("Watch stopped. {}", dim("vigie start to launch it")));
     }
     if !config_file().exists() {
-        info(&format!("Pas encore configuré : {}", bold("vigie setup")));
+        info(&format!("Not configured yet: {}", bold("vigie setup")));
         return;
     }
     let config = Config::load(true);
     let stored = fs::read_to_string(&config.output).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok());
     match stored {
         Some(stored) => {
-            let written = stored["generatedAt"].as_str().and_then(parse_iso).map(|at| ago(now().saturating_sub(at))).unwrap_or_else(|| "date inconnue".to_string());
-            info(&format!("Dernière écriture : {written}, {}", plural(stored["tickets"].as_array().map_or(0, Vec::len), "ticket")));
+            let written = stored["generatedAt"].as_str().and_then(parse_iso).map(|at| ago(now().saturating_sub(at))).unwrap_or_else(|| "unknown date".to_string());
+            info(&format!("Last write: {written}, {}", plural(stored["tickets"].as_array().map_or(0, Vec::len), "ticket")));
         }
-        None => info(&dim("Aucun fichier écrit pour l'instant")),
+        None => info(&dim("No file written yet")),
     }
     println!();
     list(&config);
@@ -796,7 +796,7 @@ fn status() {
 
 fn logs() {
     let Ok(content) = fs::read_to_string(log_file()) else {
-        fail("Pas encore de journal.");
+        fail("No log yet.");
     };
     let lines: Vec<&str> = content.lines().collect();
     println!("{}", lines[lines.len().saturating_sub(40)..].join("\n"));
@@ -805,18 +805,18 @@ fn logs() {
 fn help() {
     banner();
     let row = |command: &str, text: &str| println!("  {}{}", bold(&format!("{command:<34}")), dim(text));
-    row("vigie setup", "configure pas à pas");
-    row("vigie add <groupe>/<projet>", "surveille un projet (--group, --label, --status, --assignee)");
-    row("vigie remove <groupe>/<projet>", "arrête de le surveiller");
-    row("vigie set interval <secondes>", "fréquence d'interrogation de GitLab");
-    row("vigie set label <a>, <b>", "labels exigés, tous, sans tenir compte de la casse");
-    row("vigie set status|assignee", "filtre commun à tous les projets");
-    row("vigie set output <fichier>", "fichier où écrire les tickets trouvés");
-    row("vigie list", "projets et réglages");
-    row("vigie check [--print]", "une vérification ; --print n'écrit rien");
-    row("vigie start [--resident]", "surveillance en arrière-plan");
-    row("vigie stop | status | logs", "arrêt, état, dernières lignes du journal");
-    row("vigie run", "surveillance au premier plan");
+    row("vigie setup", "step-by-step configuration");
+    row("vigie add <group>/<project>", "watches a project (--group, --label, --status, --assignee)");
+    row("vigie remove <group>/<project>", "stops watching it");
+    row("vigie set interval <seconds>", "how often GitLab is asked");
+    row("vigie set label <a>, <b>", "required labels, all of them, whatever their case");
+    row("vigie set status|assignee", "filter shared by every project");
+    row("vigie set output <file>", "file the tickets found are written to");
+    row("vigie list", "projects and settings");
+    row("vigie check [--print]", "one check; --print writes nothing");
+    row("vigie start [--resident]", "watch in the background");
+    row("vigie stop | status | logs", "stop, state, last lines of the log");
+    row("vigie run", "watch in the foreground");
     println!();
 }
 
@@ -844,9 +844,9 @@ fn main() {
             let print = options(rest).print;
             let (count, failures) = check(&config, print);
             println!();
-            let verb = if print { "trouvé" } else { "écrit" };
-            let place = if print { String::new() } else { format!(" dans {}", config.output) };
-            ok(&format!("{} {verb}{}{place}", plural(count, "ticket"), if count > 1 { "s" } else { "" }));
+            let verb = if print { "found" } else { "written" };
+            let place = if print { String::new() } else { format!(" to {}", config.output) };
+            ok(&format!("{} {verb}{place}", plural(count, "ticket")));
             if failures > 0 {
                 process::exit(1);
             }
@@ -854,7 +854,7 @@ fn main() {
         Some("help" | "--help" | "-h") => help(),
         Some(other) => {
             help();
-            fail(&format!("Commande inconnue : {other}"));
+            fail(&format!("Unknown command: {other}"));
         }
     }
 }
@@ -874,10 +874,10 @@ mod tests {
 
     #[test]
     fn should_say_how_long_ago_in_the_largest_unit_that_fits() {
-        assert_eq!(ago(42), "il y a 42 s");
-        assert_eq!(ago(600), "il y a 10 min");
-        assert_eq!(ago(7200), "il y a 2 h");
-        assert_eq!(ago(259_200), "il y a 3 j");
+        assert_eq!(ago(42), "42 s ago");
+        assert_eq!(ago(600), "10 min ago");
+        assert_eq!(ago(7200), "2 h ago");
+        assert_eq!(ago(259_200), "3 d ago");
     }
 
     #[test]
