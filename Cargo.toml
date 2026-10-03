@@ -1,0 +1,17 @@
+[package]
+name = "vigie"
+version = "0.1.0"
+edition = "2021"
+description = "Watches GitLab for the tickets assigned to you and writes them to a file other tools can read"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
