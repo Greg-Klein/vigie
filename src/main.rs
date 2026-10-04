@@ -1,7 +1,8 @@
-//! vigie watches GitLab projects for the tickets assigned to you that carry a
-//! label and a status, and writes them to one file as a snapshot. It calls no
-//! model: only `glab`. Any other tool can read that file to pick the tickets
-//! up; its format is described in the README.
+//! vigie watches GitLab projects and GitHub repositories for the tickets
+//! assigned to you that carry a label and, on GitLab, a status, and writes them
+//! to one file as a snapshot. It calls no model: only `glab` and `gh`. Any
+//! other tool can read that file to pick the tickets up; its format is
+//! described in the README.
 //!
 //! On macOS the watch is a launchd job that runs one pass per interval, so
 //! nothing stays in memory between two passes. Elsewhere, or with
@@ -221,6 +222,9 @@ impl Default for Defaults {
 #[derive(Serialize, Deserialize, Clone)]
 struct Source {
     path: String,
+    /// On GitHub: `owner/repo`, or an owner alone with `group`. Left out, the source is on GitLab.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    github: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     group: bool,
     #[serde(default, alias = "label", skip_serializing_if = "Option::is_none", deserialize_with = "optional_labels_from")]
@@ -247,9 +251,10 @@ impl Default for Config {
     }
 }
 
-/// A source with the defaults filled in. An empty assignee means the account glab is logged in with.
+/// A source with the defaults filled in. An empty assignee means the account the CLI of the forge is logged in with.
 struct Filter {
     path: String,
+    github: bool,
     group: bool,
     /// Every one of them is required.
     labels: Vec<String>,
@@ -276,10 +281,12 @@ impl Config {
     fn filter(&self, source: &Source) -> Filter {
         Filter {
             path: source.path.clone(),
+            github: source.github,
             group: source.group,
             labels: source.labels.clone().unwrap_or_else(|| self.defaults.labels.clone()),
             status: source.status.clone().unwrap_or_else(|| self.defaults.status.clone()),
-            assignee: source.assignee.clone().unwrap_or_else(|| self.defaults.assignee.clone()),
+            // The shared assignee is a GitLab account: on GitHub only the source's own one counts.
+            assignee: source.assignee.clone().unwrap_or_else(|| if source.github { String::new() } else { self.defaults.assignee.clone() }),
         }
     }
 
@@ -290,12 +297,15 @@ impl Config {
             count => format!("label{} {}", if count > 1 { "s" } else { "" }, filter.labels.iter().map(|label| format!("\"{label}\"")).collect::<Vec<_>>().join(" + ")),
         };
         let assignee = if filter.assignee.is_empty() { "me" } else { filter.assignee.as_str() };
-        format!(
-            "{}{}  {}",
-            bold(&source.path),
-            if source.group { dim(" (group)") } else { String::new() },
-            dim(&format!("{label} · status \"{}\" · assigned to {assignee}", filter.status))
-        )
+        // A GitHub issue has no status: every open one that matches counts.
+        let status = if source.github { "open".to_string() } else { format!("status \"{}\"", filter.status) };
+        let kind = match (source.github, source.group) {
+            (true, true) => dim(" (GitHub, every repository of the owner)"),
+            (true, false) => dim(" (GitHub)"),
+            (false, true) => dim(" (group)"),
+            (false, false) => String::new(),
+        };
+        format!("{}{kind}  {}", bold(&source.path), dim(&format!("{label} · {status} · assigned to {assignee}")))
     }
 
     fn interval(&self) -> u64 {
@@ -304,7 +314,7 @@ impl Config {
 
     fn require_sources(&self) {
         if self.sources.is_empty() {
-            fail(&format!("No project to watch. Add one with {}.", bold("vigie add <group>/<project>")));
+            fail(&format!("No project to watch. Add one with {} or {}.", bold("vigie add <group>/<project>"), bold("vigie add <owner>/<repo> --github")));
         }
     }
 }
@@ -352,8 +362,65 @@ fn query(filter: &Filter, assignee: &str, cursor: Option<&str>) -> String {
     )
 }
 
+// ---------------------------------------------------------------- github
+
+fn gh(args: &[String]) -> Result<String, String> {
+    let output = Command::new("gh").args(args).stdin(Stdio::null()).output().map_err(|error| format!("gh not found or unusable: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr.lines().filter(|line| !line.trim().is_empty()).last().unwrap_or("gh failed").trim().to_string())
+}
+
+/// How many issues one call may bring back. Past it the rest is not seen, which the pass says.
+const GITHUB_LIMIT: usize = 1000;
+
+/// The call that lists the open issues assigned to someone: in one repository,
+/// or across every repository of an owner. Pull requests are never part of it.
+/// `@me` is the account `gh` is logged in with.
+fn github_arguments(filter: &Filter) -> Vec<String> {
+    let assignee = if filter.assignee.is_empty() { "@me" } else { filter.assignee.as_str() };
+    let scope: [&str; 4] = if filter.group { ["search", "issues", "--owner", &filter.path] } else { ["issue", "list", "--repo", &filter.path] };
+    let limit = GITHUB_LIMIT.to_string();
+    scope.iter().copied().chain(["--assignee", assignee, "--state", "open", "--limit", &limit, "--json", "url,title,labels"]).map(str::to_string).collect()
+}
+
+/// The issues that carry every wanted label, out of what `gh` answered. A
+/// GitHub issue has no status field, so every open one that matches counts.
+fn github_tickets(answer: &Value, filter: &Filter) -> Vec<Value> {
+    let labels_of = |issue: &Value| -> Vec<String> {
+        issue["labels"].as_array().map(|labels| labels.iter().filter_map(|label| label["name"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+    };
+    answer
+        .as_array()
+        .map(|issues| {
+            issues
+                .iter()
+                .filter(|issue| issue["url"].is_string() && carries_labels(&labels_of(issue), &filter.labels))
+                .map(|issue| json!({ "url": issue["url"], "title": issue["title"], "source": filter.path }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The open issues of one GitHub source that match its filter right now. Read-only.
+fn fetch_github(filter: &Filter) -> Result<(usize, Vec<Value>), String> {
+    let answer: Value = serde_json::from_str(&gh(&github_arguments(filter))?).map_err(|error| format!("unreadable answer: {error}"))?;
+    if answer.as_array().is_some_and(|issues| issues.len() >= GITHUB_LIMIT) {
+        return Err(format!("more than {GITHUB_LIMIT} open issues assigned: narrow the source to one repository"));
+    }
+    let tickets = github_tickets(&answer, filter);
+    Ok((tickets.len(), tickets))
+}
+
+// ---------------------------------------------------------------- sources
+
 /// The tickets of one source that match its filter right now, and how many are assigned in all. Read-only.
 fn fetch_source(filter: &Filter, me: &mut Option<String>) -> Result<(usize, Vec<Value>), String> {
+    if filter.github {
+        return fetch_github(filter);
+    }
     let assignee = if filter.assignee.is_empty() {
         if me.is_none() {
             *me = Some(current_username()?);
@@ -427,7 +494,8 @@ fn check(config: &Config, print: bool) -> (usize, usize) {
         let filter = config.filter(source);
         match fetch_source(&filter, &mut me) {
             Ok((assigned, found)) => {
-                ok(&format!("{}  {} {} {}", bold(&source.path), dim(&format!("{} assigned to me,", plural(assigned, "ticket"))), found.len(), dim(&format!("in \"{}\"", filter.status))));
+                let state = if filter.github { "open".to_string() } else { format!("in \"{}\"", filter.status) };
+                ok(&format!("{}  {} {} {}", bold(&source.path), dim(&format!("{} assigned to me,", plural(assigned, "ticket"))), found.len(), dim(&state)));
                 for ticket in &found {
                     info(&format!("{}  {}", ticket["title"].as_str().unwrap_or(""), dim(ticket["url"].as_str().unwrap_or(""))));
                 }
@@ -603,6 +671,7 @@ fn run() -> ! {
 #[derive(Default)]
 struct Options {
     positional: Vec<String>,
+    github: bool,
     group: bool,
     print: bool,
     resident: bool,
@@ -617,6 +686,7 @@ fn options(args: &[String]) -> Options {
     while index < args.len() {
         let arg = args[index].as_str();
         match arg {
+            "--github" => found.github = true,
             "--group" => found.group = true,
             "--print" => found.print = true,
             "--resident" => found.resident = true,
@@ -674,8 +744,8 @@ fn setup() {
     if !status.is_empty() {
         config.defaults.status = status;
     }
-    config.defaults.assignee = ask("Assignee (- for your glab account):", &config.defaults.assignee);
-    if let Ok(seconds) = ask("How often to ask GitLab, in seconds:", &config.interval_seconds.to_string()).parse::<u64>() {
+    config.defaults.assignee = ask("GitLab assignee (- for your glab account):", &config.defaults.assignee);
+    if let Ok(seconds) = ask("How often to ask the forges, in seconds:", &config.interval_seconds.to_string()).parse::<u64>() {
         config.interval_seconds = seconds.max(MIN_INTERVAL);
     }
     let output = ask("File to write:", &config.output);
@@ -688,13 +758,14 @@ fn setup() {
         info(&config.describe(source));
     }
     loop {
-        let added = ask("Add a project (group/project), empty to finish:", "");
+        let added = ask("Add a project (group/project on GitLab, owner/repo on GitHub), empty to finish:", "");
         if added.is_empty() {
             break;
         }
-        let group = ask("Is it a whole group? (y/N)", "N").to_lowercase().starts_with('y');
-        config.sources.retain(|source| source.path != added);
-        config.sources.push(Source { path: added.clone(), group, labels: None, status: None, assignee: None });
+        let github = ask("Is it on GitHub? (y/N)", "N").to_lowercase().starts_with('y');
+        let group = ask(if github { "Every repository of that owner? (y/N)" } else { "Is it a whole group? (y/N)" }, "N").to_lowercase().starts_with('y');
+        config.sources.retain(|source| source.path != added || source.github != github);
+        config.sources.push(Source { path: added.clone(), github, group, labels: None, status: None, assignee: None });
         ok(&format!("{added} added"));
     }
     config.save();
@@ -708,11 +779,15 @@ fn setup() {
 fn add(args: &[String]) {
     let found = options(args);
     let Some(target) = found.positional.first() else {
-        fail("Usage: vigie add <group>/<project> [--group] [--label <name>]... [--status <name>] [--assignee <account>]");
+        fail("Usage: vigie add <group>/<project> [--group] [--label <name>]... [--status <name>] [--assignee <account>]\n       vigie add <owner>/<repo> --github [--group] [--label <name>]... [--assignee <account>]");
     };
+    if found.github && found.status.is_some() {
+        fail("A GitHub issue has no status: every open one that matches the labels and the assignee is found.");
+    }
     let mut config = Config::load(false);
-    let source = Source { path: target.clone(), group: found.group, labels: found.labels, status: found.status, assignee: found.assignee };
-    config.sources.retain(|entry| &entry.path != target);
+    let source = Source { path: target.clone(), github: found.github, group: found.group, labels: found.labels, status: found.status, assignee: found.assignee };
+    // The same path may name a project on each forge.
+    config.sources.retain(|entry| &entry.path != target || entry.github != found.github);
     config.sources.push(source.clone());
     config.save();
     ok(&format!("Watching: {}", config.describe(&source)));
@@ -806,11 +881,12 @@ fn help() {
     banner();
     let row = |command: &str, text: &str| println!("  {}{}", bold(&format!("{command:<34}")), dim(text));
     row("vigie setup", "step-by-step configuration");
-    row("vigie add <group>/<project>", "watches a project (--group, --label, --status, --assignee)");
+    row("vigie add <group>/<project>", "watches a GitLab project (--group, --label, --status, --assignee)");
+    row("vigie add <owner>/<repo> --github", "watches a GitHub repository (--group for an owner, --label, --assignee)");
     row("vigie remove <group>/<project>", "stops watching it");
-    row("vigie set interval <seconds>", "how often GitLab is asked");
+    row("vigie set interval <seconds>", "how often the forges are asked");
     row("vigie set label <a>, <b>", "required labels, all of them, whatever their case");
-    row("vigie set status|assignee", "filter shared by every project");
+    row("vigie set status|assignee", "filter shared by every GitLab project");
     row("vigie set output <file>", "file the tickets found are written to");
     row("vigie list", "projects and settings");
     row("vigie check [--print]", "one check; --print writes nothing");
@@ -882,7 +958,7 @@ mod tests {
 
     #[test]
     fn should_ask_a_project_for_its_label_and_a_group_for_its_descendants() {
-        let filter = Filter { path: "acme/shop".into(), group: false, labels: vec!["Squad A".into()], status: "To do".into(), assignee: String::new() };
+        let filter = Filter { path: "acme/shop".into(), github: false, group: false, labels: vec!["Squad A".into()], status: "To do".into(), assignee: String::new() };
         let project = query(&filter, "me", None);
         assert!(project.contains(r#"project(fullPath: "acme/shop")"#));
         assert!(project.contains(r#"assigneeUsernames: ["me"]"#));
@@ -895,6 +971,41 @@ mod tests {
         assert!(group.contains("group(fullPath:"));
         assert!(group.contains("includeDescendants: true"));
         assert!(group.contains(r#"after: "abc""#));
+    }
+
+    #[test]
+    fn should_ask_gh_for_the_open_issues_of_a_repository_or_of_an_owner() {
+        let filter = Filter { path: "acme/shop".into(), github: true, group: false, labels: Vec::new(), status: "To do".into(), assignee: String::new() };
+        let repository = github_arguments(&filter).join(" ");
+        assert_eq!(repository, "issue list --repo acme/shop --assignee @me --state open --limit 1000 --json url,title,labels");
+        let owner = github_arguments(&Filter { path: "acme".into(), group: true, assignee: "someone".into(), ..filter }).join(" ");
+        assert_eq!(owner, "search issues --owner acme --assignee someone --state open --limit 1000 --json url,title,labels");
+    }
+
+    #[test]
+    fn should_keep_the_github_issues_that_carry_every_label() {
+        let filter = Filter { path: "acme/shop".into(), github: true, group: false, labels: vec!["squad a".into(), "Ready".into()], status: "To do".into(), assignee: String::new() };
+        let answer = json!([
+            { "url": "https://github.com/acme/shop/issues/1", "title": "Both labels", "labels": [{ "name": "Squad A" }, { "name": "ready" }, { "name": "bug" }] },
+            { "url": "https://github.com/acme/shop/issues/2", "title": "One label", "labels": [{ "name": "Squad A" }] },
+            { "url": "https://github.com/acme/shop/issues/3", "title": "No label", "labels": [] },
+            { "title": "No address", "labels": [{ "name": "Squad A" }, { "name": "Ready" }] }
+        ]);
+        assert_eq!(github_tickets(&answer, &filter), vec![json!({ "url": "https://github.com/acme/shop/issues/1", "title": "Both labels", "source": "acme/shop" })]);
+        // With no label required, every open issue assigned counts: GitHub has no status to narrow it.
+        assert_eq!(github_tickets(&answer, &Filter { labels: Vec::new(), ..filter }).len(), 3);
+        assert!(github_tickets(&json!({ "message": "Not Found" }), &Filter { path: "acme/shop".into(), github: true, group: false, labels: Vec::new(), status: String::new(), assignee: String::new() }).is_empty());
+    }
+
+    #[test]
+    fn should_keep_the_shared_assignee_for_gitlab_and_read_the_forge_of_a_source() {
+        let config: Config = serde_json::from_str(r#"{ "defaults": { "assignee": "gitlab.user" }, "sources": [{ "path": "acme/shop" }, { "path": "acme/shop", "github": true }, { "path": "acme", "github": true, "group": true, "assignee": "octo" }] }"#).unwrap();
+        assert_eq!((config.filter(&config.sources[0]).github, config.filter(&config.sources[0]).assignee.as_str()), (false, "gitlab.user"));
+        // A GitLab account means nothing on GitHub: the account gh is logged in with is used instead.
+        assert_eq!((config.filter(&config.sources[1]).github, config.filter(&config.sources[1]).assignee.as_str()), (true, ""));
+        assert_eq!(config.filter(&config.sources[2]).assignee, "octo");
+        // A source on GitLab is written back without the field, as before.
+        assert!(!serde_json::to_string(&config.sources[0]).unwrap().contains("github"));
     }
 
     #[test]

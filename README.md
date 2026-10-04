@@ -1,13 +1,14 @@
 ![vigie](assets/cover.png)
 
-`vigie` watches GitLab and writes to a file the tickets assigned to you that carry given labels and a given status. It calls no model and writes nothing to GitLab: it only reads, through `glab`.
+`vigie` watches GitLab and GitHub and writes to a file the tickets assigned to you that carry given labels and, on GitLab, a given status. It calls no model and writes nothing to either forge: it only reads, through `glab` and `gh`.
 
 The file is meant to be read by another tool: a script, a dashboard, an agent that picks up the tickets to do.
 
 ## Requirements
 
-- [`glab`](https://gitlab.com/gitlab-org/cli), logged in to an account that can see the projects (`glab auth login`).
-- The ticket status field, available on the paid GitLab tiers.
+- For GitLab projects: [`glab`](https://gitlab.com/gitlab-org/cli), logged in to an account that can see them (`glab auth login`), and the ticket status field, available on the paid GitLab tiers.
+- For GitHub repositories: [`gh`](https://cli.github.com), logged in to an account that can see them (`gh auth login`).
+- One of the two is enough when you only watch one forge.
 - Rust, to build it.
 
 ## Install
@@ -25,10 +26,10 @@ Install vigie from https://github.com/Greg-Klein/vigie on this machine.
 
 1. Read the README of the repository to know what vigie needs.
 2. Check for Rust (`cargo --version`). If it is missing, install it with rustup from https://rustup.rs, with the default options.
-3. Check for glab (`glab --version`). If it is missing, install it with the package manager of this system (Homebrew on macOS), following https://gitlab.com/gitlab-org/cli.
+3. Ask me whether my tickets are on GitLab, GitHub or both. For GitLab, check for glab (`glab --version`) and install it if it is missing, following https://gitlab.com/gitlab-org/cli. For GitHub, check for gh (`gh --version`) and install it if it is missing, following https://cli.github.com. Use the package manager of this system (Homebrew on macOS).
 4. Run `cargo install --git https://github.com/Greg-Klein/vigie`.
 5. Check that `vigie help` answers. If the command is not found, tell me how to add `~/.cargo/bin` to my PATH, without editing my shell files yourself.
-6. Run `glab auth status`. If glab is not logged in, do not log in for me: tell me to run `glab auth login`.
+6. Run `glab auth status` or `gh auth status`, whichever I use. If a CLI is not logged in, do not log in for me: tell me to run `glab auth login` or `gh auth login`.
 
 Do not use sudo without asking me first. Do not configure vigie and do not start the watch: finish by telling me what you installed, what was already there, and that the next step is `vigie setup`.
 ```
@@ -37,13 +38,15 @@ Do not use sudo without asking me first. Do not configure vigie and do not start
 
 ```bash
 vigie setup                          # step-by-step configuration
-vigie add <group>/<project>          # watch a project
+vigie add <group>/<project>          # watch a GitLab project
 vigie add <group> --group            # or every project of a group
+vigie add <owner>/<repo> --github    # watch a GitHub repository
+vigie add <owner> --github --group   # or every repository of an owner
 vigie remove <group>/<project>       # stop watching it
 vigie set label "team-a, frontend"   # required labels
-vigie set status "To do"             # required status
+vigie set status "To do"             # required status, on GitLab
 vigie set assignee <account>         # someone else than your glab account
-vigie set interval 60                # how often GitLab is asked, in seconds
+vigie set interval 60                # how often the forges are asked, in seconds
 vigie set output ~/tickets.json      # file to write
 vigie list                           # projects and settings
 vigie check --print                  # one pass, writing nothing
@@ -56,9 +59,9 @@ vigie run                            # watch in the foreground
 
 `vigie` alone is `vigie status`, `vigie help` lists the commands.
 
-`--label`, `--status` and `--assignee` on `vigie add` replace the common filter for that project. Adding a project that is already watched replaces its entry.
+`--label`, `--status` and `--assignee` on `vigie add` replace the common filter for that project. Adding a project that is already watched replaces its entry. The same path can be watched on both forges, as two entries; `vigie remove` drops both.
 
-Out of the box the status is "To do", no label is required and GitLab is asked every 60 seconds (10 at least). `vigie check` exits with 1 when a project could not be asked.
+Out of the box the status is "To do", no label is required and the forges are asked every 60 seconds (10 at least). `vigie check` exits with 1 when a project could not be asked.
 
 ## The filter
 
@@ -70,6 +73,15 @@ A ticket is kept when it is open, assigned to you (or to the account given as `a
 - With no label set, any label does. With no assignee set, it is the account `glab` is logged in with.
 - A group is watched with the projects of its subgroups.
 
+### On GitHub
+
+An issue is kept when it is open, assigned to you (or to the `--assignee` of that source) and carries every required label. Pull requests are never listed.
+
+- **There is no status.** A GitHub issue is open or closed, nothing else, so the status of the filter is ignored there and `vigie add --github --status` is refused. Use a label to mark the issues that are ready.
+- The shared `assignee` is a GitLab account and is not applied to GitHub: with no `--assignee` on the source, it is the account `gh` is logged in with.
+- `--group` watches every repository of an owner, a user or an organisation, through the issue search. One call brings back 1,000 issues at most: past that the source is reported as failed, narrow it to a repository.
+- A repository on a GitHub Enterprise host is written `host/owner/repo`.
+
 ## The file
 
 A snapshot of everything that matches the filter at the time of the pass, written whole and then renamed into place, so a reader never sees a half-written file.
@@ -79,7 +91,8 @@ A snapshot of everything that matches the filter at the time of the pass, writte
   "version": 1,
   "generatedAt": "2026-01-15T09:30:00.000Z",
   "tickets": [
-    { "url": "https://gitlab.com/acme/shop/-/work_items/101", "title": "Fix the cart total", "source": "acme/shop" }
+    { "url": "https://gitlab.com/acme/shop/-/work_items/101", "title": "Fix the cart total", "source": "acme/shop" },
+    { "url": "https://github.com/acme/api/issues/42", "title": "Rate limit the export", "source": "acme/api" }
   ]
 }
 ```
