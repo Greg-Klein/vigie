@@ -223,6 +223,7 @@ impl Default for Defaults {
 struct Source {
     path: String,
     /// On GitHub: `owner/repo`, or an owner alone with `group`. Left out, the source is on GitLab.
+    /// `vigie add` reads both the path and the forge from the URL of the project.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     github: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -314,7 +315,7 @@ impl Config {
 
     fn require_sources(&self) {
         if self.sources.is_empty() {
-            fail(&format!("No project to watch. Add one with {} or {}.", bold("vigie add <group>/<project>"), bold("vigie add <owner>/<repo> --github")));
+            fail(&format!("No project to watch. Add one with {}.", bold("vigie add <url>")));
         }
     }
 }
@@ -666,12 +667,85 @@ fn run() -> ! {
     }
 }
 
+// ---------------------------------------------------------------- addresses
+
+/// What the URL of a project names: its forge, its path there, and whether it is a whole group or owner.
+#[derive(Debug, PartialEq)]
+struct Project {
+    path: String,
+    github: bool,
+    group: bool,
+}
+
+/// Whether a host is a GitHub one. github.com and gitlab.com say it themselves;
+/// any other host is a GitHub Enterprise one when `gh` is logged in to it, and
+/// a GitLab one otherwise.
+fn on_github(host: &str) -> bool {
+    match host {
+        "github.com" => true,
+        "gitlab.com" => false,
+        _ => Command::new("gh").args(["auth", "status", "--hostname", host]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|status| status.success()),
+    }
+}
+
+/// Reads the URL of a project, as copied from the browser or from `git remote`.
+/// The forge is told from the host alone, by `github_host`.
+fn project_at(url: &str, github_host: impl Fn(&str) -> bool) -> Result<Project, String> {
+    let wrong = || format!("{url} is not the URL of a project, like https://gitlab.com/group/project or https://github.com/owner/repo.");
+    let trimmed = url.trim();
+    // `git@host:path` names the same place as `https://host/path`.
+    let place = match trimmed.strip_prefix("git@") {
+        Some(rest) => rest.replacen(':', "/", 1),
+        None => ["https://", "http://", "ssh://git@"].iter().find_map(|scheme| trimmed.strip_prefix(scheme)).ok_or_else(&wrong)?.to_string(),
+    };
+    let place = place.split(['?', '#']).next().unwrap_or_default();
+    let (host, path) = place.split_once('/').ok_or_else(&wrong)?;
+    let host = host.to_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let mut segments: Vec<&str> = path.split('/').filter(|segment| !segment.is_empty()).collect();
+    if let Some(last) = segments.last_mut() {
+        let whole: &str = last;
+        *last = whole.strip_suffix(".git").unwrap_or(whole);
+    }
+    if host.is_empty() {
+        return Err(wrong());
+    }
+    if github_host(host) {
+        // github.com/orgs/<owner> is the page of an organisation.
+        let organisation = segments.first() == Some(&"orgs");
+        if organisation {
+            segments.remove(0);
+        }
+        // What follows the owner or the repository is one of its pages.
+        segments.truncate(if organisation { 1 } else { 2 });
+        if segments.is_empty() {
+            return Err(wrong());
+        }
+        let group = segments.len() == 1;
+        let path = segments.join("/");
+        // A repository on a GitHub Enterprise host is written `host/owner/repo`.
+        let path = if host == "github.com" || group { path } else { format!("{host}/{path}") };
+        return Ok(Project { path, github: true, group });
+    }
+    // gitlab.com/groups/<group> is the page of a group, and what follows `/-/` a page of the project.
+    let named_group = segments.first() == Some(&"groups");
+    if named_group {
+        segments.remove(0);
+    }
+    if let Some(end) = segments.iter().position(|segment| *segment == "-") {
+        segments.truncate(end);
+    }
+    if segments.is_empty() {
+        return Err(wrong());
+    }
+    Ok(Project { path: segments.join("/"), github: false, group: named_group || segments.len() == 1 })
+}
+
 // ---------------------------------------------------------------- commands
 
 #[derive(Default)]
 struct Options {
     positional: Vec<String>,
-    github: bool,
     group: bool,
     print: bool,
     resident: bool,
@@ -686,7 +760,6 @@ fn options(args: &[String]) -> Options {
     while index < args.len() {
         let arg = args[index].as_str();
         match arg {
-            "--github" => found.github = true,
             "--group" => found.group = true,
             "--print" => found.print = true,
             "--resident" => found.resident = true,
@@ -758,15 +831,22 @@ fn setup() {
         info(&config.describe(source));
     }
     loop {
-        let added = ask("Add a project (group/project on GitLab, owner/repo on GitHub), empty to finish:", "");
+        let added = ask("Add a project by its URL, on GitLab or GitHub, empty to finish:", "");
         if added.is_empty() {
             break;
         }
-        let github = ask("Is it on GitHub? (y/N)", "N").to_lowercase().starts_with('y');
-        let group = ask(if github { "Every repository of that owner? (y/N)" } else { "Is it a whole group? (y/N)" }, "N").to_lowercase().starts_with('y');
-        config.sources.retain(|source| source.path != added || source.github != github);
-        config.sources.push(Source { path: added.clone(), github, group, labels: None, status: None, assignee: None });
-        ok(&format!("{added} added"));
+        let Project { path, github, group } = match project_at(&added, on_github) {
+            Ok(found) => found,
+            Err(error) => {
+                warn(&error);
+                continue;
+            }
+        };
+        // The URL of a GitLab group reads like the one of a project.
+        let group = group || (!github && ask("Is it a whole group? (y/N)", "N").to_lowercase().starts_with('y'));
+        config.sources.retain(|source| source.path != path || source.github != github);
+        config.sources.push(Source { path: path.clone(), github, group, labels: None, status: None, assignee: None });
+        ok(&format!("{path} added"));
     }
     config.save();
     println!();
@@ -778,16 +858,17 @@ fn setup() {
 
 fn add(args: &[String]) {
     let found = options(args);
-    let Some(target) = found.positional.first() else {
-        fail("Usage: vigie add <group>/<project> [--group] [--label <name>]... [--status <name>] [--assignee <account>]\n       vigie add <owner>/<repo> --github [--group] [--label <name>]... [--assignee <account>]");
+    let Some(url) = found.positional.first() else {
+        fail("Usage: vigie add <url> [--group] [--label <name>]... [--status <name>] [--assignee <account>]\n       <url> is the address of the project, on GitLab or GitHub: https://gitlab.com/group/project, https://github.com/owner/repo");
     };
-    if found.github && found.status.is_some() {
+    let Project { path, github, group } = project_at(url, on_github).unwrap_or_else(|error| fail(&error));
+    if github && found.status.is_some() {
         fail("A GitHub issue has no status: every open one that matches the labels and the assignee is found.");
     }
     let mut config = Config::load(false);
-    let source = Source { path: target.clone(), github: found.github, group: found.group, labels: found.labels, status: found.status, assignee: found.assignee };
+    let source = Source { path: path.clone(), github, group: group || found.group, labels: found.labels, status: found.status, assignee: found.assignee };
     // The same path may name a project on each forge.
-    config.sources.retain(|entry| &entry.path != target || entry.github != found.github);
+    config.sources.retain(|entry| entry.path != path || entry.github != github);
     config.sources.push(source.clone());
     config.save();
     ok(&format!("Watching: {}", config.describe(&source)));
@@ -795,10 +876,12 @@ fn add(args: &[String]) {
 
 fn remove(args: &[String]) {
     let mut config = Config::load(true);
-    let Some(target) = args.first().filter(|target| config.sources.iter().any(|source| &source.path == *target)) else {
+    // A project is named by its URL, or by its path as `vigie list` shows it.
+    let named = args.first().map(|named| project_at(named, on_github).map_or_else(|_| named.clone(), |found| found.path));
+    let Some(target) = named.filter(|target| config.sources.iter().any(|source| &source.path == target)) else {
         fail("This project is not watched.");
     };
-    config.sources.retain(|source| &source.path != target);
+    config.sources.retain(|source| source.path != target);
     config.save();
     ok(&format!("{target} is no longer watched"));
 }
@@ -881,9 +964,9 @@ fn help() {
     banner();
     let row = |command: &str, text: &str| println!("  {}{}", bold(&format!("{command:<34}")), dim(text));
     row("vigie setup", "step-by-step configuration");
-    row("vigie add <group>/<project>", "watches a GitLab project (--group, --label, --status, --assignee)");
-    row("vigie add <owner>/<repo> --github", "watches a GitHub repository (--group for an owner, --label, --assignee)");
-    row("vigie remove <group>/<project>", "stops watching it");
+    row("vigie add <url>", "watches a GitLab project or a GitHub repository, by its URL");
+    row("", "(--group, --label, --assignee, --status on GitLab)");
+    row("vigie remove <url>", "stops watching it");
     row("vigie set interval <seconds>", "how often the forges are asked");
     row("vigie set label <a>, <b>", "required labels, all of them, whatever their case");
     row("vigie set status|assignee", "filter shared by every GitLab project");
@@ -980,6 +1063,30 @@ mod tests {
         assert_eq!(repository, "issue list --repo acme/shop --assignee @me --state open --limit 1000 --json url,title,labels");
         let owner = github_arguments(&Filter { path: "acme".into(), group: true, assignee: "someone".into(), ..filter }).join(" ");
         assert_eq!(owner, "search issues --owner acme --assignee someone --state open --limit 1000 --json url,title,labels");
+    }
+
+    #[test]
+    fn should_tell_the_forge_and_the_path_from_the_url_of_a_project() {
+        let known = |host: &str| host == "github.com" || host == "ghe.acme.com";
+        let found = |url: &str| project_at(url, known).map(|project| (project.path, project.github, project.group));
+        assert_eq!(found("https://gitlab.com/acme/shop"), Ok(("acme/shop".into(), false, false)));
+        assert_eq!(found("https://gitlab.com/acme/team/shop/-/issues?state=opened"), Ok(("acme/team/shop".into(), false, false)));
+        assert_eq!(found("git@gitlab.com:acme/shop.git"), Ok(("acme/shop".into(), false, false)));
+        assert_eq!(found("https://gitlab.com/groups/acme/team"), Ok(("acme/team".into(), false, true)));
+        assert_eq!(found("https://gitlab.com/acme/"), Ok(("acme".into(), false, true)));
+        assert_eq!(found("https://gitlab.acme.com/acme/shop"), Ok(("acme/shop".into(), false, false)));
+
+        assert_eq!(found("https://github.com/acme/shop"), Ok(("acme/shop".into(), true, false)));
+        assert_eq!(found(" https://www.GitHub.com/acme/shop/issues/42#top "), Ok(("acme/shop".into(), true, false)));
+        assert_eq!(found("git@github.com:acme/shop.git"), Ok(("acme/shop".into(), true, false)));
+        assert_eq!(found("https://github.com/acme"), Ok(("acme".into(), true, true)));
+        assert_eq!(found("https://github.com/orgs/acme/repositories"), Ok(("acme".into(), true, true)));
+        // On a GitHub Enterprise host, gh needs the host in front of the repository.
+        assert_eq!(found("https://ghe.acme.com/acme/shop"), Ok(("ghe.acme.com/acme/shop".into(), true, false)));
+
+        assert!(found("acme/shop").is_err());
+        assert!(found("https://github.com/").is_err());
+        assert!(found("https://gitlab.com").is_err());
     }
 
     #[test]

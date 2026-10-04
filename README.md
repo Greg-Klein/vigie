@@ -38,11 +38,9 @@ Do not use sudo without asking me first. Do not configure vigie and do not start
 
 ```bash
 vigie setup                          # step-by-step configuration
-vigie add <group>/<project>          # watch a GitLab project
-vigie add <group> --group            # or every project of a group
-vigie add <owner>/<repo> --github    # watch a GitHub repository
-vigie add <owner> --github --group   # or every repository of an owner
-vigie remove <group>/<project>       # stop watching it
+vigie add <url>                      # watch a GitLab project or a GitHub repository
+vigie add <url> --group              # or every project of a GitLab group
+vigie remove <url>                   # stop watching it
 vigie set label "team-a, frontend"   # required labels
 vigie set status "To do"             # required status, on GitLab
 vigie set assignee <account>         # someone else than your glab account
@@ -59,7 +57,21 @@ vigie run                            # watch in the foreground
 
 `vigie` alone is `vigie status`, `vigie help` lists the commands.
 
-`--label`, `--status` and `--assignee` on `vigie add` replace the common filter for that project. Adding a project that is already watched replaces its entry. The same path can be watched on both forges, as two entries; `vigie remove` drops both.
+A project is added by its URL, as copied from the browser or from `git remote`:
+
+```bash
+vigie add https://gitlab.com/acme/shop
+vigie add https://gitlab.com/groups/acme        # a whole group
+vigie add https://github.com/acme/api
+vigie add https://github.com/acme               # every repository of an owner
+vigie add git@github.com:acme/api.git
+```
+
+The forge is read from the host: `github.com` is GitHub, `gitlab.com` is GitLab. Any other host is a GitHub Enterprise one when `gh` is logged in to it, and a GitLab one otherwise. The address of a page of the project (an issue, a board) works too.
+
+A GitLab group is recognised when the URL is its `/groups/...` page or holds a single name. A subgroup written `https://gitlab.com/acme/team` reads like a project: add `--group`.
+
+`--label`, `--status` and `--assignee` on `vigie add` replace the common filter for that project. Adding a project that is already watched replaces its entry. The same path can be watched on both forges, as two entries; `vigie remove` drops both, and also takes the path as `vigie list` shows it.
 
 Out of the box the status is "To do", no label is required and the forges are asked every 60 seconds (10 at least). `vigie check` exits with 1 when a project could not be asked.
 
@@ -77,10 +89,10 @@ A ticket is kept when it is open, assigned to you (or to the account given as `a
 
 An issue is kept when it is open, assigned to you (or to the `--assignee` of that source) and carries every required label. Pull requests are never listed.
 
-- **There is no status.** A GitHub issue is open or closed, nothing else, so the status of the filter is ignored there and `vigie add --github --status` is refused. Use a label to mark the issues that are ready.
+- **There is no status.** A GitHub issue is open or closed, nothing else, so the status of the filter is ignored there and `--status` is refused on a GitHub URL. Use a label to mark the issues that are ready.
 - The shared `assignee` is a GitLab account and is not applied to GitHub: with no `--assignee` on the source, it is the account `gh` is logged in with.
-- `--group` watches every repository of an owner, a user or an organisation, through the issue search. One call brings back 1,000 issues at most: past that the source is reported as failed, narrow it to a repository.
-- A repository on a GitHub Enterprise host is written `host/owner/repo`.
+- The URL of an owner, a user or an organisation, watches every one of its repositories, through the issue search. One call brings back 1,000 issues at most: past that the source is reported as failed, narrow it to a repository.
+- A repository on a GitHub Enterprise host is kept as `host/owner/repo` in the configuration.
 
 ## The file
 
