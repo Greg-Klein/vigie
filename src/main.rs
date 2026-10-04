@@ -54,10 +54,13 @@ const BANNER: [&str; 6] = [
 
 fn banner() {
     println!();
-    for line in BANNER {
+    // The version sits to the right of the last line of the drawing.
+    let (last, lines) = BANNER.split_last().unwrap_or((&"", &[]));
+    for line in lines {
         println!("{}", blue(line));
     }
-    println!("  {}\n", dim("watches GitLab, lists the tickets waiting for you"));
+    println!("{}  {}", blue(last), dim(concat!("v", env!("CARGO_PKG_VERSION"))));
+    println!("  {}\n", dim("watches GitLab and GitHub, lists the tickets waiting for you"));
 }
 
 fn ok(text: &str) { println!("  {} {text}", green("✔")); }
