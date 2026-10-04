@@ -1,4 +1,4 @@
-![vigie](assets/cover.png)
+![vigie](assets/cover.webp)
 
 `vigie` watches GitLab and GitHub and writes to a file the tickets assigned to you that carry given labels and, on GitLab, a given status. It calls no model and writes nothing to either forge: it only reads, through `glab` and `gh`.
 
