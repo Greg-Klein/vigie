@@ -16,6 +16,23 @@ The file is meant to be read by another tool: a script, a dashboard, an agent th
 cargo install --path .
 ```
 
+### With an agent
+
+Paste this prompt into a coding agent (Claude Code, Codex, opencode). It installs `vigie` and whatever it needs that is missing.
+
+```text
+Install vigie from https://github.com/Greg-Klein/vigie on this machine.
+
+1. Read the README of the repository to know what vigie needs.
+2. Check for Rust (`cargo --version`). If it is missing, install it with rustup from https://rustup.rs, with the default options.
+3. Check for glab (`glab --version`). If it is missing, install it with the package manager of this system (Homebrew on macOS), following https://gitlab.com/gitlab-org/cli.
+4. Run `cargo install --git https://github.com/Greg-Klein/vigie`.
+5. Check that `vigie help` answers. If the command is not found, tell me how to add `~/.cargo/bin` to my PATH, without editing my shell files yourself.
+6. Run `glab auth status`. If glab is not logged in, do not log in for me: tell me to run `glab auth login`.
+
+Do not use sudo without asking me first. Do not configure vigie and do not start the watch: finish by telling me what you installed, what was already there, and that the next step is `vigie setup`.
+```
+
 ## Usage
 
 ```bash
