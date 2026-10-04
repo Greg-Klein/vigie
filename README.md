@@ -1,5 +1,3 @@
-# vigie
-
 ![vigie](assets/cover.png)
 
 `vigie` watches GitLab and writes to a file the tickets assigned to you that carry given labels and a given status. It calls no model and writes nothing to GitLab: it only reads, through `glab`.
