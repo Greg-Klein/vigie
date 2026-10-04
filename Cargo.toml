@@ -1,8 +1,8 @@
 [package]
 name = "vigie"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Watches GitLab for the tickets assigned to you and writes them to a file other tools can read"
+description = "Watches GitLab and GitHub for the tickets assigned to you and writes them to a file other tools can read"
 license = "MIT"
 
 [dependencies]
